@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <title>Moje VR střelnice</title>
+  <!-- A-Frame: knihovna, která z HTML značek postaví 3D svět a umí VR -->
+  <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+
+  <script>
+    // ===== ZVUK =====
+    // Prohlížeč pustí zvuk až po první akci hráče (klik, klávesa, tlačítko VR),
+    // proto zvukový „motor“ zapneme až při ní.
+    let zvuk = null;
+    function odemkniZvuk() {
+      if (!zvuk) zvuk = new AudioContext();
+      if (zvuk.state === 'suspended') zvuk.resume();
+    }
+    // true = zachytíme akci jako první, i kliknutí na tlačítko VR
+    ['mousedown', 'click', 'keydown'].forEach(function (akce) {
+      document.addEventListener(akce, odemkniZvuk, true);
+    });
+
+    // Krátké „píu“: tón, který rychle klesne a zeslábne
+    function pipni() {
+      if (!zvuk) return;                              // zvuk ještě není odemčený
+      const ted = zvuk.currentTime;
+      const ton = zvuk.createOscillator();            // generátor tónu
+      const hlasitost = zvuk.createGain();            // regulátor hlasitosti
+      ton.type = 'square';                            // „osmibitový“ zvuk
+      ton.frequency.setValueAtTime(900, ted);         // začne vysoko…
+      ton.frequency.exponentialRampToValueAtTime(200, ted + 0.2);  // …a klesne
+      hlasitost.gain.setValueAtTime(0.2, ted);
+      hlasitost.gain.exponentialRampToValueAtTime(0.001, ted + 0.25);
+      ton.connect(hlasitost).connect(zvuk.destination);
+      ton.start(ted);
+      ton.stop(ted + 0.25);
+    }
+
+    // ===== HRA =====
+    // Komponenta = kus chování, který přidáme nějaké entitě. Tahle je „mozek hry“.
+    AFRAME.registerComponent('hra', {
+      init: function () {
+        this.body = 0;                                // kolik terčů je sestřeleno
+        this.pocet = 10;                              // kolik terčů je celkem
+        this.start = null;                            // čas prvního zásahu
+        this.tabule = document.querySelector('#tabule');
+        this.tabule.setAttribute('text', 'value', 'Body 0/' + this.pocet);
+        const barvy = ['#ff4f5e', '#ffb400', '#2ee59d', '#3fa9f5', '#c86bfa',
+                       '#ff7ac6', '#f9f871', '#00e0d0', '#ff8c42', '#7cff6b'];
+
+        // Cyklus: vyrobíme všechny terče a rozmístíme je do kruhu kolem hráče
+        for (let i = 0; i < this.pocet; i++) {
+          const uhel = (i / this.pocet) * Math.PI * 2;       // úhel na kruhu v radiánech
+          const vzdalenost = 4 + Math.random() * 4;           // 4 až 8 metrů
+          const x = Math.sin(uhel) * vzdalenost;
+          const y = 1 + Math.random() * 1.6;                   // výška 1 až 2,6 m
+          const z = -Math.cos(uhel) * vzdalenost;
+          const barva = barvy[i % barvy.length];              // % = barvy se opakují dokola
+
+          const terc = document.createElement('a-sphere');
+          terc.classList.add('terc');                         // podle třídy ho najde laser
+          terc.setAttribute('radius', 0.35);
+          terc.setAttribute('position', x + ' ' + y + ' ' + z);
+          terc.setAttribute('material', 'color: ' + barva + '; emissive: ' + barva + '; emissiveIntensity: 0.4');
+
+          // Pomalý pohyb tam a zpátky k náhodnému místu poblíž
+          const cilX = x + (Math.random() - 0.5) * 3;
+          const cilY = y + (Math.random() - 0.5) * 1.4;
+          const doba = 2500 + Math.round(Math.random() * 2500);  // 2,5 až 5 s, menší = rychlejší
+          terc.setAttribute('animation', 'property: position; to: ' + cilX + ' ' + cilY + ' ' + z +
+            '; dir: alternate; loop: true; dur: ' + doba + '; easing: easeInOutSine');
+
+          // „mousedown“ = stisk tlačítka myši NEBO spouště ovladače
+          terc.addEventListener('mousedown', () => this.zasah(terc));
+          this.el.appendChild(terc);
+        }
+      },
+
+      // Co se stane při zásahu
+      zasah: function (terc) {
+        if (!terc.classList.contains('terc')) return;       // sestřelený terč už nepočítáme
+        terc.classList.remove('terc');
+        if (this.start === null) this.start = performance.now();  // stopky běží od 1. zásahu
+
+        pipni();
+        terc.setAttribute('animation__zmizeni', 'property: scale; to: 0.01 0.01 0.01; dur: 150');
+        setTimeout(() => terc.remove(), 160);                // po animaci terč smažeme
+
+        this.body++;
+        // Pozor: písmo v A-Frame neumí háčky a čárky, proto nápisy bez diakritiky
+        let text = 'Body ' + this.body + '/' + this.pocet;
+        if (this.body === this.pocet) {
+          const sekundy = ((performance.now() - this.start) / 1000).toFixed(1);
+          text += '\nHotovo za ' + sekundy + ' s';
+        }
+        this.tabule.setAttribute('text', 'value', text);
+      }
+    });
+  </script>
+</head>
+
+<body>
+  <!-- SCÉNA. cursor + raycaster = střelba myší na notebooku (jen na objekty s třídou „terc“) -->
+  <a-scene cursor="rayOrigin: mouse" raycaster="objects: .terc">
+
+    <!-- ARÉNA: soumračná obloha, podlaha a oranžový okraj -->
+    <a-sky color="#2e2a5a"></a-sky>
+    <a-circle rotation="-90 0 0" radius="15" color="#4a4378"></a-circle>
+    <a-ring rotation="-90 0 0" position="0 0.01 0" radius-inner="14.6" radius-outer="15" color="#ffb454"></a-ring>
+
+    <!-- PŘEKÁŽKY -->
+    <a-box position="-3 0.75 -4" width="1.5" height="1.5" depth="1.5" color="#6b61a3"></a-box>
+    <a-cylinder position="3.5 1 -3" radius="0.6" height="2" color="#827ab8"></a-cylinder>
+    <a-box position="0 0.5 5" width="3" height="1" depth="0.5" color="#6b61a3"></a-box>
+    <a-box position="-5 1.5 2" width="0.5" height="3" depth="3" color="#827ab8"></a-box>
+
+    <!-- TABULE SE SKÓRE. Souřadnice x y z jsou v metrech, z = -9 znamená 9 m před tebou -->
+    <a-plane position="0 3.6 -9" width="5.5" height="2" color="#1e1a3d">
+      <a-text id="tabule" value="Body 0/10" font="exo2bold" align="center" width="10"
+              color="#ffe8c2" position="0 0 0.01"></a-text>
+    </a-plane>
+
+    <!-- HRÁČ: hlava (kamera) a pravá ruka s laserem, který „vidí“ jen terče -->
+    <a-entity id="hrac">
+      <a-entity camera look-controls wasd-controls position="0 1.6 0"></a-entity>
+      <a-entity laser-controls="hand: right" raycaster="objects: .terc; far: 30"
+                line="color: #ffe8c2; opacity: 0.8"></a-entity>
+    </a-entity>
+
+    <!-- MOZEK HRY: neviditelná entita s naší komponentou „hra“ -->
+    <a-entity hra></a-entity>
+  </a-scene>
+</body>
+</html>
