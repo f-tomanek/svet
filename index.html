@@ -2,130 +2,325 @@
 <html lang="cs">
 <head>
   <meta charset="utf-8">
-  <title>Moje VR střelnice</title>
-  <!-- A-Frame: knihovna, která z HTML značek postaví 3D svět a umí VR -->
+  <title>Útok dronů</title>
+  <!-- A-Frame: knihovna, která z HTML značek postaví 3D svět a umí VR i AR -->
   <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
 
   <script>
+    // ===== NASTAVENÍ HRY (tady si můžeš hrát s čísly) =====
+    const POCET_DRONU = 10;      // kolik dronů je v jedné hře
+    const ZIVOTY = 3;            // kolik zásahů vydržíš
+    const RYCHLOST_KOULE = 2.2;  // jak rychle letí koule dronů (metry za vteřinu)
+    const MAX_KOULI = 2;         // kolik koulí smí letět najednou
+    const BARVY = ['#ff4f5e', '#ffb400', '#2ee59d', '#3fa9f5', '#c86bfa',
+                   '#ff7ac6', '#f9f871', '#00e0d0', '#ff8c42', '#7cff6b'];
+
     // ===== ZVUK =====
-    // Prohlížeč pustí zvuk až po první akci hráče (klik, klávesa, tlačítko VR),
+    // Prohlížeč pustí zvuk až po první akci hráče (klik, klávesa, tlačítko VR/AR),
     // proto zvukový „motor“ zapneme až při ní.
     let zvuk = null;
     function odemkniZvuk() {
       if (!zvuk) zvuk = new AudioContext();
       if (zvuk.state === 'suspended') zvuk.resume();
     }
-    // true = zachytíme akci jako první, i kliknutí na tlačítko VR
+    // true = zachytíme akci jako první, i kliknutí na tlačítko VR/AR
     ['mousedown', 'click', 'keydown'].forEach(function (akce) {
       document.addEventListener(akce, odemkniZvuk, true);
     });
 
-    // Krátké „píu“: tón, který rychle klesne a zeslábne
-    function pipni() {
-      if (!zvuk) return;                              // zvuk ještě není odemčený
+    // Tón, který sklouzne z jedné výšky do druhé a zeslábne
+    function ton(typ, od, kam, delka, sila) {
+      if (!zvuk) return;
       const ted = zvuk.currentTime;
-      const ton = zvuk.createOscillator();            // generátor tónu
-      const hlasitost = zvuk.createGain();            // regulátor hlasitosti
-      ton.type = 'square';                            // „osmibitový“ zvuk
-      ton.frequency.setValueAtTime(900, ted);         // začne vysoko…
-      ton.frequency.exponentialRampToValueAtTime(200, ted + 0.2);  // …a klesne
-      hlasitost.gain.setValueAtTime(0.2, ted);
-      hlasitost.gain.exponentialRampToValueAtTime(0.001, ted + 0.25);
-      ton.connect(hlasitost).connect(zvuk.destination);
-      ton.start(ted);
-      ton.stop(ted + 0.25);
+      const generator = zvuk.createOscillator();
+      const hlasitost = zvuk.createGain();
+      generator.type = typ;
+      generator.frequency.setValueAtTime(od, ted);
+      generator.frequency.exponentialRampToValueAtTime(kam, ted + delka);
+      hlasitost.gain.setValueAtTime(sila, ted);
+      hlasitost.gain.exponentialRampToValueAtTime(0.001, ted + delka);
+      generator.connect(hlasitost).connect(zvuk.destination);
+      generator.start(ted);
+      generator.stop(ted + delka);
+    }
+
+    // Výbuch: krátký šum, ze kterého filtr postupně ubírá výšky („bum“)
+    function bum() {
+      if (!zvuk) return;
+      const ted = zvuk.currentTime;
+      const vzorky = Math.floor(zvuk.sampleRate * 0.5);          // půl vteřiny zvuku
+      const buffer = zvuk.createBuffer(1, vzorky, zvuk.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < vzorky; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / vzorky);
+      const sum = zvuk.createBufferSource();
+      sum.buffer = buffer;
+      const filtr = zvuk.createBiquadFilter();
+      filtr.type = 'lowpass';
+      filtr.frequency.setValueAtTime(3000, ted);
+      filtr.frequency.exponentialRampToValueAtTime(80, ted + 0.5);
+      const hlasitost = zvuk.createGain();
+      hlasitost.gain.value = 0.6;
+      sum.connect(filtr).connect(hlasitost).connect(zvuk.destination);
+      sum.start(ted);
+    }
+
+    // ===== VIBRACE =====
+    // Motorek v pravém ovladači. „?.“ znamená „jen pokud to existuje“,
+    // takže na notebooku bez ovladače se prostě nic nestane.
+    function vibruj(sila, delka) {
+      const ovladac = document.querySelector('#laser').components['tracked-controls'];
+      const motorek = ovladac?.controller?.gamepad?.hapticActuators?.[0];
+      if (motorek) motorek.pulse(sila, delka);
+    }
+
+    // ===== VÝBUCH =====
+    // 12 svítících úlomků vyletí z místa zásahu do náhodných směrů a zmenší se
+    function vybuch(rodic, pozice, barva) {
+      for (let i = 0; i < 12; i++) {
+        const ulomek = document.createElement('a-sphere');
+        ulomek.setAttribute('radius', 0.06);
+        ulomek.setAttribute('material', 'shader: flat; color: ' + barva);
+        ulomek.setAttribute('position', pozice.x + ' ' + pozice.y + ' ' + pozice.z);
+        const cil = (pozice.x + (Math.random() - 0.5) * 2.4) + ' ' +
+                    (pozice.y + (Math.random() - 0.5) * 2.4) + ' ' +
+                    (pozice.z + (Math.random() - 0.5) * 2.4);
+        ulomek.setAttribute('animation', 'property: position; to: ' + cil + '; dur: 600; easing: easeOutQuad');
+        ulomek.setAttribute('animation__zmizeni', 'property: scale; to: 0.01 0.01 0.01; dur: 600; easing: easeInQuad');
+        rodic.appendChild(ulomek);
+        setTimeout(() => ulomek.remove(), 650);
+      }
     }
 
     // ===== HRA =====
-    // Komponenta = kus chování, který přidáme nějaké entitě. Tahle je „mozek hry“.
+    // Komponenta „hra“ je mozek: rozmístí drony, řídí jejich střelbu,
+    // hlídá zásahy a počítá body a životy.
     AFRAME.registerComponent('hra', {
       init: function () {
-        this.body = 0;                                // kolik terčů je sestřeleno
-        this.pocet = 10;                              // kolik terčů je celkem
-        this.start = null;                            // čas prvního zásahu
+        this.bezi = false;                               // běží právě hra?
+        this.drony = [];
+        this.koule = [];
+        this.hlava = new AFRAME.THREE.Vector3();         // poloha hlavy hráče
         this.tabule = document.querySelector('#tabule');
-        this.tabule.setAttribute('text', 'value', 'Body 0/' + this.pocet);
-        const barvy = ['#ff4f5e', '#ffb400', '#2ee59d', '#3fa9f5', '#c86bfa',
-                       '#ff7ac6', '#f9f871', '#00e0d0', '#ff8c42', '#7cff6b'];
+        this.tlacitko = document.querySelector('#tlacitko');
+        this.napisTlacitka = document.querySelector('#napis-tlacitka');
+        this.blesk = document.querySelector('#blesk');
+        this.srdce = Array.from(document.querySelectorAll('.srdce'));
+        this.tabule.setAttribute('text', 'value', 'Drony 0/' + POCET_DRONU);
+        this.tlacitko.addEventListener('mousedown', () => this.novaHra());
+      },
 
-        // Cyklus: vyrobíme všechny terče a rozmístíme je do kruhu kolem hráče
-        for (let i = 0; i < this.pocet; i++) {
-          const uhel = (i / this.pocet) * Math.PI * 2;       // úhel na kruhu v radiánech
-          const vzdalenost = 4 + Math.random() * 4;           // 4 až 8 metrů
-          const x = Math.sin(uhel) * vzdalenost;
-          const y = 1 + Math.random() * 1.6;                   // výška 1 až 2,6 m
-          const z = -Math.cos(uhel) * vzdalenost;
-          const barva = barvy[i % barvy.length];              // % = barvy se opakují dokola
+      // Nová hra začne střelou do tlačítka START / ZNOVU
+      novaHra: function () {
+        if (this.bezi) return;                           // hra už běží
+        this.body = 0;
+        this.zivoty = ZIVOTY;
+        this.srdce.forEach(s => s.setAttribute('visible', true));
+        this.tlacitko.setAttribute('visible', false);    // tlačítko schováme
+        this.tlacitko.setAttribute('position', '0 -100 0');  // a odklidíme laseru z cesty
+        this.tlacitko.classList.remove('cil');
+        this.tabule.setAttribute('text', 'value', 'Drony 0/' + POCET_DRONU);
+        this.start = performance.now();
+        this.bezi = true;
+        for (let i = 0; i < POCET_DRONU; i++) this.pridejDron(i);
+      },
 
-          const terc = document.createElement('a-sphere');
-          terc.classList.add('terc');                         // podle třídy ho najde laser
-          terc.setAttribute('radius', 0.35);
-          terc.setAttribute('position', x + ' ' + y + ' ' + z);
-          terc.setAttribute('material', 'color: ' + barva + '; emissive: ' + barva + '; emissiveIntensity: 0.4');
+      // Vyrobí jeden dron: tělo, vrtuli a oko
+      pridejDron: function (i) {
+        const barva = BARVY[i % BARVY.length];
+        // Drony jsou v oblouku před hráčem (zhruba -75° až +75°), aby každou kouli viděl
+        const uhel = (i / (POCET_DRONU - 1) - 0.5) * 2.6;
+        // V AR (ve tvém pokoji) přiletí blíž než v aréně
+        const blizko = this.el.sceneEl.is('ar-mode');
+        const vzdalenost = blizko ? 3 + Math.random() * 2 : 5 + Math.random() * 4;
+        const x = Math.sin(uhel) * vzdalenost;
+        const y = 1.2 + Math.random() * 1.6;
+        const z = -Math.cos(uhel) * vzdalenost;
 
-          // Pomalý pohyb tam a zpátky k náhodnému místu poblíž
-          const cilX = x + (Math.random() - 0.5) * 3;
-          const cilY = y + (Math.random() - 0.5) * 1.4;
-          const doba = 2500 + Math.round(Math.random() * 2500);  // 2,5 až 5 s, menší = rychlejší
-          terc.setAttribute('animation', 'property: position; to: ' + cilX + ' ' + cilY + ' ' + z +
-            '; dir: alternate; loop: true; dur: ' + doba + '; easing: easeInOutSine');
+        const dron = document.createElement('a-octahedron');     // tělo, do kterého se střílí
+        dron.classList.add('cil');
+        dron.setAttribute('radius', 0.35);
+        dron.setAttribute('position', x + ' ' + y + ' ' + z);
+        dron.setAttribute('material', 'color: ' + barva + '; emissive: ' + barva + '; emissiveIntensity: 0.35');
+        const kamX = x + (Math.random() - 0.5) * 3;
+        const kamY = y + (Math.random() - 0.5) * 1.2;
+        const doba = 2500 + Math.round(Math.random() * 2500);
+        dron.setAttribute('animation', 'property: position; to: ' + kamX + ' ' + kamY + ' ' + z +
+          '; dir: alternate; loop: true; dur: ' + doba + '; easing: easeInOutSine');
 
-          // „mousedown“ = stisk tlačítka myši NEBO spouště ovladače
-          terc.addEventListener('mousedown', () => this.zasah(terc));
-          this.el.appendChild(terc);
+        const vrtule = document.createElement('a-box');          // vrtule, která se točí
+        vrtule.setAttribute('width', 0.8);
+        vrtule.setAttribute('height', 0.02);
+        vrtule.setAttribute('depth', 0.08);
+        vrtule.setAttribute('position', '0 0.4 0');
+        vrtule.setAttribute('color', '#ffe8c2');
+        vrtule.setAttribute('animation', 'property: rotation; to: 0 360 0; loop: true; dur: 300; easing: linear');
+        dron.appendChild(vrtule);
+
+        const oko = document.createElement('a-sphere');          // oko, které míří na hráče
+        oko.setAttribute('radius', 0.1);
+        oko.setAttribute('position', '0 0 0.32');
+        oko.setAttribute('material', 'shader: flat; color: #ff2e63');
+        // Před výstřelem oko nabobtná a splaskne: varování pro hráče
+        oko.setAttribute('animation__nabij', 'property: scale; from: 2.2 2.2 2.2; to: 1 1 1; dur: 500; startEvents: nabij');
+        dron.appendChild(oko);
+
+        // Vlastní údaje si ukládáme přímo k prvku dronu
+        dron.barva = barva;
+        dron.oko = oko;
+        dron.pristiVystrel = this.el.sceneEl.time + 2000 + Math.random() * 6000;  // první výstřel za 2 až 8 s
+        dron.nabito = false;
+        dron.addEventListener('mousedown', () => this.zasahDronu(dron));
+        this.el.appendChild(dron);
+        this.drony.push(dron);
+      },
+
+      // Hráč sestřelil dron
+      zasahDronu: function (dron) {
+        if (!this.bezi || !dron.classList.contains('cil')) return;
+        dron.classList.remove('cil');
+        const pozice = new AFRAME.THREE.Vector3();
+        dron.object3D.getWorldPosition(pozice);
+        vybuch(this.el, pozice, dron.barva);
+        bum();
+        vibruj(0.6, 60);
+        dron.remove();
+        this.drony = this.drony.filter(d => d !== dron);
+        this.body++;
+        this.tabule.setAttribute('text', 'value', 'Drony ' + this.body + '/' + POCET_DRONU);
+        if (this.body === POCET_DRONU) {
+          const sekundy = ((performance.now() - this.start) / 1000).toFixed(1);
+          this.konecHry('Hotovo za ' + sekundy + ' s');
         }
       },
 
-      // Co se stane při zásahu
-      zasah: function (terc) {
-        if (!terc.classList.contains('terc')) return;       // sestřelený terč už nepočítáme
-        terc.classList.remove('terc');
-        if (this.start === null) this.start = performance.now();  // stopky běží od 1. zásahu
+      // Koule zasáhla hráče
+      zasahHrace: function () {
+        this.zivoty--;
+        this.srdce[this.zivoty].setAttribute('visible', false);   // zhasne jeden život
+        this.blesk.emit('blik');                                  // červený záblesk
+        ton('square', 160, 50, 0.4, 0.3);                         // hluboké „bzzz“
+        vibruj(1, 250);                                           // silná vibrace
+        if (this.zivoty === 0) this.konecHry('Konec hry');
+      },
 
-        pipni();
-        terc.setAttribute('animation__zmizeni', 'property: scale; to: 0.01 0.01 0.01; dur: 150');
-        setTimeout(() => terc.remove(), 160);                // po animaci terč smažeme
-
-        this.body++;
-        // Pozor: písmo v A-Frame neumí háčky a čárky, proto nápisy bez diakritiky
-        let text = 'Body ' + this.body + '/' + this.pocet;
-        if (this.body === this.pocet) {
-          const sekundy = ((performance.now() - this.start) / 1000).toFixed(1);
-          text += '\nHotovo za ' + sekundy + ' s';
+      // Konec hry, ať už výhrou, nebo prohrou
+      konecHry: function (zprava) {
+        this.bezi = false;
+        this.koule.forEach(k => k.remove());
+        this.koule = [];
+        // Drony, které přežily, odletí vzhůru a zmizí
+        for (const dron of this.drony) {
+          dron.classList.remove('cil');
+          dron.removeAttribute('animation');
+          const p = dron.object3D.position;
+          dron.setAttribute('animation__odlet', 'property: position; to: ' + p.x + ' ' + (p.y + 30) + ' ' + p.z +
+            '; dur: 2000; easing: easeInQuad');
+          setTimeout(() => dron.remove(), 2000);
         }
-        this.tabule.setAttribute('text', 'value', text);
+        this.drony = [];
+        this.tabule.setAttribute('text', 'value', 'Drony ' + this.body + '/' + POCET_DRONU + '\n' + zprava);
+        this.napisTlacitka.setAttribute('text', 'value', 'ZNOVU');
+        this.tlacitko.setAttribute('position', '0 2.1 -8.8');
+        this.tlacitko.setAttribute('visible', true);
+        this.tlacitko.classList.add('cil');
+      },
+
+      // Dron vystřelí kouli tam, kde je právě hlava hráče
+      vystrel: function (dron) {
+        const start = new AFRAME.THREE.Vector3();
+        dron.oko.object3D.getWorldPosition(start);
+        const koule = document.createElement('a-sphere');
+        koule.setAttribute('radius', 0.12);
+        koule.setAttribute('material', 'shader: flat; color: #ff2e63');
+        koule.setAttribute('position', start.x + ' ' + start.y + ' ' + start.z);
+        koule.setAttribute('animation', 'property: scale; from: 0.7 0.7 0.7; to: 1.3 1.3 1.3; dir: alternate; loop: true; dur: 150');
+        koule.smer = this.hlava.clone().sub(start).normalize();   // směr se už nemění, takže se dá uhnout
+        koule.zanikne = this.el.sceneEl.time + 7000;              // po 7 s koule zmizí
+        this.el.appendChild(koule);
+        this.koule.push(koule);
+        ton('sawtooth', 500, 150, 0.25, 0.08);                    // „pjů“ výstřelu dronu
+      },
+
+      // tick běží každý snímek (desítkykrát za vteřinu): tady se hra hýbe
+      tick: function (time, delta) {
+        if (!this.bezi) return;
+        const dt = Math.min(delta, 100) / 1000;                   // vteřiny od minulého snímku
+        this.el.sceneEl.camera.getWorldPosition(this.hlava);      // kde je teď hlava hráče
+        this.blesk.object3D.position.copy(this.hlava);            // záblesk držíme kolem hlavy
+
+        // Drony: natočit na hráče, před výstřelem bliknout okem, pak vystřelit
+        for (const dron of this.drony) {
+          dron.object3D.lookAt(this.hlava);
+          if (time > dron.pristiVystrel) {
+            if (this.koule.length < MAX_KOULI) this.vystrel(dron);
+            dron.pristiVystrel = time + 4000 + Math.random() * 5000;
+            dron.nabito = false;
+          } else if (!dron.nabito && time > dron.pristiVystrel - 600) {
+            dron.nabito = true;
+            dron.oko.emit('nabij');
+          }
+        }
+
+        // Koule: posunout dál, zkontrolovat zásah hlavy, staré smazat
+        for (let i = this.koule.length - 1; i >= 0; i--) {
+          const koule = this.koule[i];
+          koule.object3D.position.addScaledVector(koule.smer, RYCHLOST_KOULE * dt);
+          const trefa = koule.object3D.position.distanceTo(this.hlava) < 0.25;
+          if (trefa || time > koule.zanikne) {
+            koule.remove();
+            this.koule.splice(i, 1);
+            if (trefa) {
+              this.zasahHrace();
+              if (!this.bezi) return;                             // byl to poslední život
+            }
+          }
+        }
       }
     });
   </script>
 </head>
 
 <body>
-  <!-- SCÉNA. cursor + raycaster = střelba myší na notebooku (jen na objekty s třídou „terc“) -->
-  <a-scene cursor="rayOrigin: mouse" raycaster="objects: .terc">
+  <!-- SCÉNA: myš na notebooku (cursor + raycaster) a tlačítka pro VR i AR (xr-mode-ui) -->
+  <a-scene cursor="rayOrigin: mouse" raycaster="objects: .cil" xr-mode-ui="XRMode: xr">
 
-    <!-- ARÉNA: soumračná obloha, podlaha a oranžový okraj -->
-    <a-sky color="#2e2a5a"></a-sky>
-    <a-circle rotation="-90 0 0" radius="15" color="#4a4378"></a-circle>
-    <a-ring rotation="-90 0 0" position="0 0.01 0" radius-inner="14.6" radius-outer="15" color="#ffb454"></a-ring>
+    <!-- ARÉNA. hide-on-enter-ar = v AR se schová a místo ní uvidíš svůj pokoj -->
+    <a-sky color="#2e2a5a" hide-on-enter-ar></a-sky>
+    <a-circle rotation="-90 0 0" radius="15" color="#4a4378" hide-on-enter-ar></a-circle>
+    <a-ring rotation="-90 0 0" position="0 0.01 0" radius-inner="14.6" radius-outer="15" color="#ffb454" hide-on-enter-ar></a-ring>
 
-    <!-- PŘEKÁŽKY -->
-    <a-box position="-3 0.75 -4" width="1.5" height="1.5" depth="1.5" color="#6b61a3"></a-box>
-    <a-cylinder position="3.5 1 -3" radius="0.6" height="2" color="#827ab8"></a-cylinder>
-    <a-box position="0 0.5 5" width="3" height="1" depth="0.5" color="#6b61a3"></a-box>
-    <a-box position="-5 1.5 2" width="0.5" height="3" depth="3" color="#827ab8"></a-box>
+    <!-- PŘEKÁŽKY (v AR taky zmizí) -->
+    <a-box position="-3 0.75 -4" width="1.5" height="1.5" depth="1.5" color="#6b61a3" hide-on-enter-ar></a-box>
+    <a-cylinder position="3.5 1 -3" radius="0.6" height="2" color="#827ab8" hide-on-enter-ar></a-cylinder>
+    <a-box position="0 0.5 5" width="3" height="1" depth="0.5" color="#6b61a3" hide-on-enter-ar></a-box>
+    <a-box position="-5 1.5 2" width="0.5" height="3" depth="3" color="#827ab8" hide-on-enter-ar></a-box>
 
-    <!-- TABULE SE SKÓRE. Souřadnice x y z jsou v metrech, z = -9 znamená 9 m před tebou -->
+    <!-- TABULE: počet sestřelených dronů, zpráva a tři životy (červené kuličky) -->
     <a-plane position="0 3.6 -9" width="5.5" height="2" color="#1e1a3d">
-      <a-text id="tabule" value="Body 0/10" font="exo2bold" align="center" width="10"
-              color="#ffe8c2" position="0 0 0.01"></a-text>
+      <a-text id="tabule" value="Drony 0/10" font="exo2bold" align="center" width="10"
+              color="#ffe8c2" position="0 0.25 0.01"></a-text>
+      <a-sphere class="srdce" radius="0.16" position="-0.5 -0.6 0.05" material="shader: flat; color: #ff2e63"></a-sphere>
+      <a-sphere class="srdce" radius="0.16" position="0 -0.6 0.05" material="shader: flat; color: #ff2e63"></a-sphere>
+      <a-sphere class="srdce" radius="0.16" position="0.5 -0.6 0.05" material="shader: flat; color: #ff2e63"></a-sphere>
     </a-plane>
 
-    <!-- HRÁČ: hlava (kamera) a pravá ruka s laserem, který „vidí“ jen terče -->
+    <!-- TLAČÍTKO START / ZNOVU: hra začne, až do něj střelíš -->
+    <a-box id="tlacitko" class="cil" position="0 2.1 -8.8" width="1.8" height="0.55" depth="0.1" color="#ffb454">
+      <a-text id="napis-tlacitka" value="START" font="exo2bold" align="center" width="7"
+              color="#1e1a3d" position="0 0 0.06"></a-text>
+    </a-box>
+
+    <!-- HRÁČ: hlava (kamera) a pravá ruka s laserem, který „vidí“ jen cíle -->
     <a-entity id="hrac">
       <a-entity camera look-controls wasd-controls position="0 1.6 0"></a-entity>
-      <a-entity laser-controls="hand: right" raycaster="objects: .terc; far: 30"
+      <a-entity id="laser" laser-controls="hand: right" raycaster="objects: .cil; far: 30"
                 line="color: #ffe8c2; opacity: 0.8"></a-entity>
     </a-entity>
+
+    <!-- ČERVENÝ ZÁBLESK při zásahu: průhledná koule kolem hlavy, kterou vidíš zevnitř -->
+    <a-sphere id="blesk" radius="0.3" position="0 1.6 0"
+              material="shader: flat; color: #ff0033; transparent: true; opacity: 0; side: back; depthTest: false"
+              animation__blik="property: material.opacity; from: 0.6; to: 0; dur: 400; startEvents: blik"></a-sphere>
 
     <!-- MOZEK HRY: neviditelná entita s naší komponentou „hra“ -->
     <a-entity hra></a-entity>
